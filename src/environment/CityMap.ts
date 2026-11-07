@@ -14,6 +14,7 @@ export interface InteractiveSupplyCrate {
   mesh: THREE.Group;
   type: 'AMMO' | 'HEALTH' | 'PERK';
   opened: boolean;
+  colliderRef?: CollidableBox;
 }
 
 export class CityMap {
@@ -658,21 +659,36 @@ export class CityMap {
       beaconLight.position.set(0, 0.8, 0);
       group.add(beaconLight);
 
-      this.group.add(group);
+      const collider = this.addCollider(
+        new THREE.Vector3(pos.x - 0.5, 0, pos.z - 0.4),
+        new THREE.Vector3(pos.x + 0.5, 0.7, pos.z + 0.4),
+        'prop',
+        group
+      );
 
       this.supplyCrates.push({
         position: pos.clone(),
         mesh: group,
         type,
         opened: false,
+        colliderRef: collider,
       });
-
-      this.addCollider(
-        new THREE.Vector3(pos.x - 0.5, 0, pos.z - 0.4),
-        new THREE.Vector3(pos.x + 0.5, 0.7, pos.z + 0.4),
-        'prop'
-      );
     });
+  }
+
+  public removeCollider(target: CollidableBox | THREE.Object3D) {
+    const idx = this.colliders.findIndex(
+      (c) => c === target || (c.objectRef && c.objectRef === target)
+    );
+    if (idx !== -1) {
+      this.colliders.splice(idx, 1);
+    }
+  }
+
+  public isPlayerInExtractionZone(pos: THREE.Vector3, zoneRadius = 6.5): boolean {
+    if (!this.extractionBeacon.active) return false;
+    const d = pos.distanceTo(this.extractionBeacon.pos);
+    return d <= zoneRadius;
   }
 
   public activateExtraction() {
@@ -702,8 +718,10 @@ export class CityMap {
     }
   }
 
-  public addCollider(min: THREE.Vector3, max: THREE.Vector3, type: CollidableBox['type'], objectRef?: THREE.Object3D) {
-    this.colliders.push({ min, max, type, objectRef });
+  public addCollider(min: THREE.Vector3, max: THREE.Vector3, type: CollidableBox['type'], objectRef?: THREE.Object3D): CollidableBox {
+    const box: CollidableBox = { min, max, type, objectRef };
+    this.colliders.push(box);
+    return box;
   }
 
   // Check 2D AABB / Circle collision for entity movement

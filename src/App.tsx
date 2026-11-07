@@ -8,7 +8,9 @@ import { GameOverModal } from './ui/GameOverModal';
 import { VictoryModal } from './ui/VictoryModal';
 import { SettingsModal } from './ui/SettingsModal';
 import { HowToPlayModal } from './ui/HowToPlayModal';
-import { RemnantRun, GameStats, PerkDef } from './types/game';
+import { OnlineLobbyModal } from './ui/OnlineLobbyModal';
+import { RemnantRun, GameStats, PerkDef, GameMode } from './types/game';
+import { safeStorage } from './utils/storage';
 
 export default function App() {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -18,6 +20,7 @@ export default function App() {
   const [showMemoryBank, setShowMemoryBank] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [showHowToPlay, setShowHowToPlay] = useState(false);
+  const [showOnlineLobby, setShowOnlineLobby] = useState(false);
 
   const [savedRemnants, setSavedRemnants] = useState<RemnantRun[]>([]);
   const [upgradeChoices, setUpgradeChoices] = useState<PerkDef[]>([]);
@@ -56,9 +59,9 @@ export default function App() {
     };
   }, []);
 
-  const handleStartGame = () => {
+  const handleStartGame = (mode: GameMode = 'SOLO') => {
     if (engineRef.current) {
-      engineRef.current.startNewRun();
+      engineRef.current.startNewRun(mode);
     }
   };
 
@@ -76,11 +79,7 @@ export default function App() {
       return r;
     });
     setSavedRemnants(updated);
-    try {
-      localStorage.setItem('DEAD_RECKONING_REMNANTS_V1', JSON.stringify(updated));
-    } catch (e) {
-      console.warn('Save error:', e);
-    }
+    safeStorage.setItem('DEAD_RECKONING_REMNANTS_V1', JSON.stringify(updated));
   };
 
   const handleReturnToMenu = () => {
@@ -108,6 +107,7 @@ export default function App() {
           onOpenMemoryBank={() => setShowMemoryBank(true)}
           onOpenHowToPlay={() => setShowHowToPlay(true)}
           onOpenSettings={() => setShowSettings(true)}
+          onOpenOnlineLobby={() => setShowOnlineLobby(true)}
           savedRemnantCount={savedRemnants.length}
         />
       )}
@@ -160,7 +160,7 @@ export default function App() {
       {gameState === 'GAMEOVER' && (
         <GameOverModal
           run={lastSavedRun}
-          onRestart={handleStartGame}
+          onRestart={() => handleStartGame(engineRef.current?.gameMode || 'SOLO')}
           onOpenMemoryBank={() => setShowMemoryBank(true)}
           onReturnToMenu={handleReturnToMenu}
         />
@@ -170,7 +170,7 @@ export default function App() {
       {gameState === 'VICTORY' && victoryStats && (
         <VictoryModal
           stats={victoryStats}
-          onRestart={handleStartGame}
+          onRestart={() => handleStartGame(engineRef.current?.gameMode || 'SOLO')}
           onOpenMemoryBank={() => setShowMemoryBank(true)}
           onReturnToMenu={handleReturnToMenu}
         />
@@ -195,6 +195,13 @@ export default function App() {
       {showHowToPlay && (
         <HowToPlayModal
           onClose={() => setShowHowToPlay(false)}
+        />
+      )}
+
+      {showOnlineLobby && (
+        <OnlineLobbyModal
+          onClose={() => setShowOnlineLobby(false)}
+          onStartMatch={handleStartGame}
         />
       )}
     </div>

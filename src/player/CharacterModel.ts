@@ -36,7 +36,11 @@ export class CharacterModel {
   // Materials list for opacity / glitch updates
   private materials: THREE.Material[] = [];
 
-  constructor(isRemnant = false, remnantColorHex = 0x00ffee) {
+  constructor(
+    isRemnant = false,
+    remnantColorHex = 0x00ffee,
+    public operativeType: 'P1' | 'P2' = 'P1'
+  ) {
     this.isRemnant = isRemnant;
     this.remnantColorHex = remnantColorHex;
     this.root = new THREE.Group();
@@ -78,13 +82,19 @@ export class CharacterModel {
   }
 
   private buildRig() {
+    const isP2 = this.operativeType === 'P2';
+    const shirtColor = isP2 ? 0x443020 : 0x2a333d; // Tactical amber hazard vs tactical navy
+    const vestColor = isP2 ? 0x251c16 : 0x1a1e24;  // Carbon amber vest vs ballistic vest
+    const pantsColor = isP2 ? 0x383028 : 0x3e443b; // Desert dark vs olive camo
+    const visorColor = isP2 ? 0xff9900 : 0x00e1ff; // Glowing visor
+
     // Colors
     const skinMat = this.createMaterial(0xd8a47f, 0.7, 0.1);
-    const shirtMat = this.createMaterial(0x2a333d, 0.8, 0.2); // Tactical charcoal navy
-    const vestMat = this.createMaterial(0x1a1e24, 0.6, 0.4);  // Heavy ballistic vest
-    const pantsMat = this.createMaterial(0x3e443b, 0.9, 0.1); // Olive tactical camo
-    const bootMat = this.createMaterial(0x16181b, 0.8, 0.3);  // Leather combat boots
-    const gearMat = this.createMaterial(0x111317, 0.5, 0.6);  // Holsters/straps
+    const shirtMat = this.createMaterial(shirtColor, 0.8, 0.2);
+    const vestMat = this.createMaterial(vestColor, 0.6, 0.4);
+    const pantsMat = this.createMaterial(pantsColor, 0.9, 0.1);
+    const bootMat = this.createMaterial(0x16181b, 0.8, 0.3);
+    const gearMat = this.createMaterial(0x111317, 0.5, 0.6);
 
     // Root -> Pelvis
     this.pelvis = new THREE.Group();
@@ -140,10 +150,17 @@ export class CharacterModel {
     helmet.castShadow = !this.isRemnant;
     this.head.add(helmet);
 
-    // Goggles
+    // Goggles & Visor Glow
     const goggles = new THREE.Mesh(new THREE.BoxGeometry(0.26, 0.08, 0.1), gearMat);
     goggles.position.set(0, 0.17, 0.18);
     this.head.add(goggles);
+
+    const visorGlow = new THREE.Mesh(
+      new THREE.BoxGeometry(0.22, 0.04, 0.03),
+      new THREE.MeshBasicMaterial({ color: visorColor })
+    );
+    visorGlow.position.set(0, 0.17, 0.23);
+    this.head.add(visorGlow);
 
     // Left Arm
     this.leftArmUpper = new THREE.Group();
@@ -333,7 +350,7 @@ export class CharacterModel {
 
   public updateAnimation(
     dt: number,
-    state: 'idle' | 'walk' | 'run' | 'sprint' | 'dash' | 'reload' | 'hit' | 'death',
+    state: 'idle' | 'walk' | 'run' | 'sprint' | 'dash' | 'reload' | 'hit' | 'death' | 'downed',
     pitch: number,
     isAiming: boolean
   ) {
@@ -362,6 +379,17 @@ export class CharacterModel {
           mat.opacity = pulse;
         }
       });
+    }
+
+    if (state === 'downed') {
+      // Crawling / downed pose on hands and knees
+      this.pelvis.position.y = THREE.MathUtils.lerp(this.pelvis.position.y, 0.45, dt * 6);
+      this.spine.rotation.x = 0.55;
+      this.leftArmUpper.rotation.x = -1.1;
+      this.rightArmUpper.rotation.x = -0.5;
+      this.leftLegUpper.rotation.x = 1.3;
+      this.rightLegUpper.rotation.x = 1.3;
+      return;
     }
 
     if (state === 'death') {

@@ -6,7 +6,7 @@ import { EnemyManager } from '../enemies/EnemyManager';
 import { RemnantManager } from '../remnants/RemnantManager';
 import { PlayerController } from '../player/PlayerController';
 import { soundManager } from '../audio/SoundManager';
-import { GameStats, RemnantRun, PerkDef } from '../types/game';
+import { GameMode, GameStats, RemnantRun, PerkDef } from '../types/game';
 import { PERK_POOL } from '../types/perks';
 
 export type EngineState = 'MENU' | 'PLAYING' | 'PAUSED' | 'UPGRADE' | 'GAMEOVER' | 'VICTORY';
@@ -16,6 +16,10 @@ export class GameEngine {
   public renderer!: THREE.WebGLRenderer;
   public scene!: THREE.Scene;
   public camera!: THREE.PerspectiveCamera;
+  public camera2!: THREE.PerspectiveCamera;
+
+  // Game Mode
+  public gameMode: GameMode = 'SOLO';
 
   // Subsystems
   public input!: InputManager;
@@ -24,6 +28,7 @@ export class GameEngine {
   public enemyManager!: EnemyManager;
   public remnantManager!: RemnantManager;
   public player!: PlayerController;
+  public player2: PlayerController | null = null;
 
   // State
   public state: EngineState = 'MENU';
@@ -38,6 +43,7 @@ export class GameEngine {
   public isExtracting = false;
   public extractionTimer = 0;
   public extractionDuration = 35; // 35 seconds to hold helipad
+  public isInExtractionZone = false;
 
   // Perks
   public selectedPerks: PerkDef[] = [];
@@ -78,6 +84,9 @@ export class GameEngine {
     this.camera = new THREE.PerspectiveCamera(62, width / height, 0.1, 200);
     this.camera.position.set(0, 5, 10);
 
+    this.camera2 = new THREE.PerspectiveCamera(62, (width / 2) / height, 0.1, 200);
+    this.camera2.position.set(0, 5, 10);
+
     this.renderer = new THREE.WebGLRenderer({
       canvas: this.canvas,
       antialias: true,
@@ -103,16 +112,22 @@ export class GameEngine {
     this.input.onLightingToggle = () => {
       this.toggleLightingMode();
     };
+    this.input.onVisibilityChange = (visible: boolean) => {
+      soundManager.handleVisibilityChange(visible);
+      if (!visible && this.state === 'PLAYING') {
+        this.pauseGame();
+      }
+    };
 
     this.vfx = new VFXSystem(this.scene);
     this.map = new CityMap(this.scene);
-    // Set default day mode for vibrant, realistic daylight
     this.map.setLightingMode(this.lightingMode);
 
     this.enemyManager = new EnemyManager(this.scene, this.vfx, this.map);
     this.remnantManager = new RemnantManager(this.scene, this.vfx);
     this.remnantManager.setEnemyManager(this.enemyManager);
 
+    // Player 1 (Operative Vanguard Cyan)
     this.player = new PlayerController(
       this.scene,
       this.camera,
@@ -120,30 +135,63 @@ export class GameEngine {
       this.vfx,
       this.map,
       this.enemyManager,
-      this.remnantManager
+      this.remnantManager,
+      'P1'
     );
 
-    // Bind Player events
+    // Player 2 (Operative Recon Amber)
+    this.player2 = new PlayerController(
+      this.scene,
+      this.camera2,
+      this.input,
+      this.vfx,
+      this.map,
+      this.enemyManager,
+      this.remnantManager,
+      'P2'
+    );
+    this.player2.model.root.visible = false;
+
+    // Link Teammates
+    this.player.teammate = this.player2;
+    this.player2.teammate = this.player;
+
+    // Bind Player death events
     this.player.onPlayerDied = (cause) => {
-      this.handlePlayerDeath(cause);
+      this.handlePlayerDeath('P1', cause);
+    };
+    this.player2.onPlayerDied = (cause) => {
+      this.handlePlayerDeath('P2', cause);
     };
 
     this.player.onPerkReward = () => {
       this.triggerPerkSelection();
     };
-
-    this.player.onDamagePopup = (worldPos, amount, isHeadshot, isMelee) => {
-      if (!this.camera) return;
-      const v = worldPos.clone().project(this.camera);
-      // Check if in front of camera
-      if (v.z < 1.0) {
-        const x = (v.x * 0.5 + 0.5) * window.innerWidth;
-        const y = (-(v.y * 0.5) + 0.5) * window.innerHeight;
-        if (this.onDamagePopup) {
-          this.onDamagePopup({ x, y }, amount, isHeadshot, isMelee);
-        }
-      }
+    this.player2.onPerkReward = () => {
+      this.triggerPerkSelection();
     };
+
+    // Damage Popups with Split-Screen awareness
+    const bindPopup = (p: PlayerController, cam: THREE.PerspectiveCamera) => {
+      p.onDamagePopup = (worldPos, amount, isHeadshot, isMelee) => {
+        const v = worldPos.clone().project(cam);
+        if (v.z < 1.0) {
+          const w = window.innerWidth;
+          const h = window.innerHeight;
+          let x = (v.x * 0.5 + 0.5) * w;
+          if (this.gameMode === 'LOCAL_COOP') {
+            const halfW = w / 2;
+            x = (v.x * 0.5 + 0.5) * halfW + (p.playerId === 'P2' ? halfW : 0);
+          }
+          const y = (-(v.y * 0.5) + 0.5) * h;
+          if (this.onDamagePopup) {
+            this.onDamagePopup({ x, y }, amount, isHeadshot, isMelee);
+          }
+        }
+      };
+    };
+    bindPopup(this.player, this.camera);
+    bindPopup(this.player2, this.camera2);
 
     this.enemyManager.onBossKilled = () => {
       this.startExtractionProtocol();
@@ -168,17 +216,28 @@ export class GameEngine {
   }
 
   private handleResize = () => {
-    if (!this.renderer || !this.camera) return;
+    if (!this.renderer || !this.camera || !this.camera2) return;
     const width = window.innerWidth;
     const height = window.innerHeight;
-    this.camera.aspect = width / height;
-    this.camera.updateProjectionMatrix();
+
+    if (this.gameMode === 'LOCAL_COOP') {
+      const halfW = Math.floor(width / 2);
+      this.camera.aspect = halfW / height;
+      this.camera.updateProjectionMatrix();
+      this.camera2.aspect = (width - halfW) / height;
+      this.camera2.updateProjectionMatrix();
+    } else {
+      this.camera.aspect = width / height;
+      this.camera.updateProjectionMatrix();
+    }
     this.renderer.setSize(width, height);
   };
 
   // --- GAMEPLAY LIFECYCLE ---
 
-  public startNewRun() {
+  public startNewRun(mode: GameMode = 'SOLO') {
+    this.gameMode = mode;
+    this.input.setGameMode(mode);
     this.state = 'PLAYING';
     this.currentWave = 1;
     this.waveTimer = 0;
@@ -187,21 +246,43 @@ export class GameEngine {
     this.totalMatchTime = 0;
     this.isExtracting = false;
     this.extractionTimer = 0;
+    this.isInExtractionZone = false;
     this.selectedPerks = [];
 
     // Reset systems
     this.enemyManager.clearAll();
     this.map.deactivateExtraction();
-    this.player.resetPlayer(new THREE.Vector3(0, 0, 8));
+
+    if (this.gameMode === 'LOCAL_COOP') {
+      this.player.resetPlayer(new THREE.Vector3(-2.2, 0, 8));
+      this.player.model.root.visible = true;
+      if (this.player2) {
+        this.player2.resetPlayer(new THREE.Vector3(2.2, 0, 8));
+        this.player2.model.root.visible = true;
+        this.player.teammate = this.player2;
+        this.player2.teammate = this.player;
+      }
+    } else {
+      this.player.resetPlayer(new THREE.Vector3(0, 0, 8));
+      this.player.model.root.visible = true;
+      this.player.teammate = null;
+      if (this.player2) {
+        this.player2.model.root.visible = false;
+        this.player2.isDead = true;
+        this.player2.teammate = null;
+      }
+    }
+
     this.remnantManager.startRecording();
     this.remnantManager.deployActiveRemnants();
 
+    this.input.setPointerLockAllowed(true);
     this.input.requestLock();
     soundManager.init();
 
     if (this.onStateChange) this.onStateChange('PLAYING');
 
-    // Spawn initial wave 1 zombies
+    // Spawn wave 1
     this.startWave(1);
 
     if (!this.animFrameId) {
@@ -212,18 +293,21 @@ export class GameEngine {
 
   public pauseGame() {
     this.state = 'PAUSED';
+    this.input.setPointerLockAllowed(false);
     this.input.releaseLock();
     if (this.onStateChange) this.onStateChange('PAUSED');
   }
 
   public resumeGame() {
     this.state = 'PLAYING';
+    this.input.setPointerLockAllowed(true);
     this.input.requestLock();
     if (this.onStateChange) this.onStateChange('PLAYING');
   }
 
   public triggerPerkSelection() {
     this.state = 'UPGRADE';
+    this.input.setPointerLockAllowed(false);
     this.input.releaseLock();
 
     // Pick 3 random perks from pool not already chosen
@@ -237,34 +321,55 @@ export class GameEngine {
   public selectPerk(perk: PerkDef) {
     this.selectedPerks.push(perk);
     perk.effect(this.player);
+    if (this.gameMode === 'LOCAL_COOP' && this.player2) {
+      perk.effect(this.player2);
+    }
     this.resumeGame();
   }
 
-  private handlePlayerDeath(cause: string) {
-    this.state = 'GAMEOVER';
-    this.input.releaseLock();
+  private handlePlayerDeath(playerId: 'P1' | 'P2', cause: string) {
+    if (this.gameMode === 'LOCAL_COOP' && this.player2) {
+      // In Co-Op, spawn the fallen player's autonomous Chrono-Remnant to fight alongside surviving partner!
+      this.remnantManager.finishAndSavePlayerRun(playerId, cause);
+      soundManager.playRemnantMaterialize();
 
-    // Save run into Memory Bank
-    const savedRun = this.remnantManager.finishAndSaveRun(cause);
+      const p1Dead = this.player.isDead;
+      const p2Dead = this.player2.isDead;
 
-    if (this.onGameOver) this.onGameOver(savedRun);
-    if (this.onStateChange) this.onStateChange('GAMEOVER');
+      if (p1Dead && p2Dead) {
+        this.state = 'GAMEOVER';
+        this.input.setPointerLockAllowed(false);
+        this.input.releaseLock();
+        const savedRun = this.remnantManager.finishAndSaveRun('Squad Extinguished in Combat');
+        if (this.onGameOver) this.onGameOver(savedRun);
+        if (this.onStateChange) this.onStateChange('GAMEOVER');
+      }
+    } else {
+      this.state = 'GAMEOVER';
+      this.input.setPointerLockAllowed(false);
+      this.input.releaseLock();
+      const savedRun = this.remnantManager.finishAndSaveRun(cause);
+      if (this.onGameOver) this.onGameOver(savedRun);
+      if (this.onStateChange) this.onStateChange('GAMEOVER');
+    }
   }
 
   public startExtractionProtocol() {
     this.isExtracting = true;
     this.extractionTimer = this.extractionDuration;
+    this.isInExtractionZone = false;
     this.map.activateExtraction();
     soundManager.playExtractionSiren();
 
-    // Spawn massive final extraction wave!
-    for (let i = 0; i < 12; i++) {
+    const count = this.gameMode === 'LOCAL_COOP' ? 18 : 12;
+    for (let i = 0; i < count; i++) {
       this.enemyManager.spawnZombie(i % 3 === 0 ? 'RUNNER' : 'SHAMBLER');
     }
   }
 
   private completeExtraction() {
     this.state = 'VICTORY';
+    this.input.setPointerLockAllowed(false);
     this.input.releaseLock();
     this.remnantManager.finishAndSaveRun('Successfully Extracted');
 
@@ -288,32 +393,41 @@ export class GameEngine {
     this.isWaveIntermission = false;
     soundManager.playZombieGroan(0.9);
 
+    const isCoop = this.gameMode === 'LOCAL_COOP';
+
     if (waveNum === 1) {
-      // 7 basic Shamblers
-      for (let i = 0; i < 7; i++) {
-        this.enemyManager.spawnZombie('SHAMBLER');
-      }
+      const count = isCoop ? 11 : 7;
+      for (let i = 0; i < count; i++) this.enemyManager.spawnZombie('SHAMBLER');
     } else if (waveNum === 2) {
-      // 10 Shamblers + 3 Fast Runners
-      for (let i = 0; i < 10; i++) this.enemyManager.spawnZombie('SHAMBLER');
-      for (let i = 0; i < 3; i++) this.enemyManager.spawnZombie('RUNNER');
+      const shamblers = isCoop ? 15 : 10;
+      const runners = isCoop ? 5 : 3;
+      for (let i = 0; i < shamblers; i++) this.enemyManager.spawnZombie('SHAMBLER');
+      for (let i = 0; i < runners; i++) this.enemyManager.spawnZombie('RUNNER');
     } else if (waveNum === 3) {
-      // Mixed swarm + 2 Brutes
-      for (let i = 0; i < 12; i++) this.enemyManager.spawnZombie('SHAMBLER');
-      for (let i = 0; i < 4; i++) this.enemyManager.spawnZombie('RUNNER');
-      for (let i = 0; i < 2; i++) this.enemyManager.spawnZombie('BRUTE');
+      const shamblers = isCoop ? 18 : 12;
+      const runners = isCoop ? 6 : 4;
+      const brutes = isCoop ? 3 : 2;
+      for (let i = 0; i < shamblers; i++) this.enemyManager.spawnZombie('SHAMBLER');
+      for (let i = 0; i < runners; i++) this.enemyManager.spawnZombie('RUNNER');
+      for (let i = 0; i < brutes; i++) this.enemyManager.spawnZombie('BRUTE');
     } else if (waveNum === 4) {
-      // 3 Spitters + 3 Hunters + 10 Shamblers
-      for (let i = 0; i < 10; i++) this.enemyManager.spawnZombie('SHAMBLER');
-      for (let i = 0; i < 3; i++) this.enemyManager.spawnZombie('SPITTER');
-      for (let i = 0; i < 3; i++) this.enemyManager.spawnZombie('HUNTER');
+      const shamblers = isCoop ? 15 : 10;
+      const spitters = isCoop ? 5 : 3;
+      const hunters = isCoop ? 5 : 3;
+      for (let i = 0; i < shamblers; i++) this.enemyManager.spawnZombie('SHAMBLER');
+      for (let i = 0; i < spitters; i++) this.enemyManager.spawnZombie('SPITTER');
+      for (let i = 0; i < hunters; i++) this.enemyManager.spawnZombie('HUNTER');
     } else if (waveNum === 5) {
       // BOSS WAVE: THE RECKONER!
-      this.enemyManager.spawnZombie('BOSS_RECKONER', new THREE.Vector3(0, 0, -25));
-      for (let i = 0; i < 6; i++) this.enemyManager.spawnZombie('RUNNER');
+      const boss = this.enemyManager.spawnZombie('BOSS_RECKONER', new THREE.Vector3(0, 0, -25));
+      if (isCoop) {
+        boss.hp = 3800;
+        boss.maxHp = 3800;
+      }
+      const runners = isCoop ? 9 : 6;
+      for (let i = 0; i < runners; i++) this.enemyManager.spawnZombie('RUNNER');
     } else {
-      // Escalating endless / extraction waves
-      const count = 12 + waveNum * 3;
+      const count = isCoop ? Math.floor((12 + waveNum * 3) * 1.5) : (12 + waveNum * 3);
       for (let i = 0; i < count; i++) {
         const types = ['SHAMBLER', 'RUNNER', 'BRUTE', 'SPITTER', 'HUNTER'] as const;
         this.enemyManager.spawnZombie(types[Math.floor(Math.random() * types.length)]);
@@ -329,6 +443,9 @@ export class GameEngine {
     this.lastTime = now;
 
     if (this.state === 'PLAYING') {
+      // Poll gamepad input for P1 and P2
+      this.input.updateGamepad(dt);
+
       this.totalMatchTime += dt;
       const matchTimeMs = this.totalMatchTime * 1000;
 
@@ -338,26 +455,45 @@ export class GameEngine {
       // 2. Update VFX Particles & Rain
       this.vfx.update(dt, this.player.position);
 
-      // 3. Update Player & Weapon Mechanics
+      // 3. Update Players & Weapon Mechanics
       this.player.update(dt);
+      if (this.gameMode === 'LOCAL_COOP' && this.player2) {
+        this.player2.update(dt);
+      }
 
       // 4. Update Remnants Replay & Combat AI
       this.remnantManager.update(dt, matchTimeMs);
 
-      // 5. Update Zombie AI (Targeting Player OR Remnants!)
+      // 5. Update Zombie AI (Targeting alive Players OR Remnants!)
+      const targets = [
+        {
+          id: 'P1' as const,
+          position: this.player.position,
+          isDead: this.player.isDead,
+          isDowned: this.player.isDowned,
+          takeDamage: (dmg: number) => this.player.takeDamage(dmg),
+        },
+      ];
+      if (this.gameMode === 'LOCAL_COOP' && this.player2) {
+        targets.push({
+          id: 'P2' as const,
+          position: this.player2.position,
+          isDead: this.player2.isDead,
+          isDowned: this.player2.isDowned,
+          takeDamage: (dmg: number) => this.player2!.takeDamage(dmg),
+        });
+      }
+
       const remnantPositions = this.remnantManager.getRemnantPositions();
-      this.enemyManager.update(dt, this.player.position, remnantPositions, (dmg) => {
-        this.player.takeDamage(dmg);
-      });
+      this.enemyManager.update(dt, targets, remnantPositions);
 
       // 6. Wave Progress & Intermission
       const aliveZombies = this.enemyManager.zombies.filter(z => !z.isDead).length;
       if (aliveZombies === 0 && !this.isWaveIntermission && !this.isExtracting) {
         this.isWaveIntermission = true;
-        this.intermissionTimer = 4.0; // 4s breather between waves
+        this.intermissionTimer = 4.0;
         if (this.onWaveComplete) this.onWaveComplete(this.currentWave);
 
-        // Every 2 waves trigger a perk upgrade choice!
         if (this.currentWave % 2 === 0) {
           this.triggerPerkSelection();
         }
@@ -370,17 +506,19 @@ export class GameEngine {
         }
       }
 
-      // 7. Extraction Protocol Countdown
+      // 7. Extraction Protocol Countdown with Zone Validation
       if (this.isExtracting) {
-        this.extractionTimer -= dt;
-        if (this.extractionTimer <= 0) {
-          this.completeExtraction();
-        }
+        const inZone1 = !this.player.isDead && this.map.isPlayerInExtractionZone(this.player.position, 6.5);
+        const inZone2 = this.gameMode === 'LOCAL_COOP' && this.player2 && !this.player2.isDead && this.map.isPlayerInExtractionZone(this.player2.position, 6.5);
+        const anyInZone = inZone1 || inZone2;
+        this.isInExtractionZone = !!anyInZone;
 
-        // Check if player is standing in Helipad zone
-        const distToHelipad = this.player.position.distanceTo(this.map.extractionBeacon.pos);
-        if (distToHelipad > 6.0) {
-          // Warning player to stay in zone
+        if (anyInZone) {
+          const speedMultiplier = (inZone1 && inZone2) ? 1.25 : 1.0;
+          this.extractionTimer -= dt * speedMultiplier;
+          if (this.extractionTimer <= 0) {
+            this.completeExtraction();
+          }
         }
       }
 
@@ -399,8 +537,33 @@ export class GameEngine {
       }
     }
 
-    // Render 3D Scene
-    this.renderer.render(this.scene, this.camera);
+    // Render 3D Scene (Split-Screen for Local Co-op, Fullscreen for Solo)
+    if (this.gameMode === 'LOCAL_COOP' && this.player2) {
+      const w = this.canvas.clientWidth || window.innerWidth;
+      const h = this.canvas.clientHeight || window.innerHeight;
+      const halfW = Math.floor(w / 2);
+
+      this.renderer.setScissorTest(true);
+
+      // Player 1 Viewport (Left)
+      this.camera.aspect = halfW / h;
+      this.camera.updateProjectionMatrix();
+      this.renderer.setViewport(0, 0, halfW, h);
+      this.renderer.setScissor(0, 0, halfW, h);
+      this.renderer.render(this.scene, this.camera);
+
+      // Player 2 Viewport (Right)
+      this.camera2.aspect = (w - halfW) / h;
+      this.camera2.updateProjectionMatrix();
+      this.renderer.setViewport(halfW, 0, w - halfW, h);
+      this.renderer.setScissor(halfW, 0, w - halfW, h);
+      this.renderer.render(this.scene, this.camera2);
+
+      this.renderer.setScissorTest(false);
+    } else {
+      this.renderer.setViewport(0, 0, this.canvas.clientWidth || window.innerWidth, this.canvas.clientHeight || window.innerHeight);
+      this.renderer.render(this.scene, this.camera);
+    }
   };
 
   public destroy() {

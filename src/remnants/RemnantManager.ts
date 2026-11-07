@@ -5,6 +5,7 @@ import { soundManager } from '../audio/SoundManager';
 import { VFXSystem } from '../effects/VFXSystem';
 import { EnemyManager } from '../enemies/EnemyManager';
 import { WEAPON_REGISTRY } from '../weapons/WeaponSystem';
+import { safeStorage } from '../utils/storage';
 
 const STORAGE_KEY = 'DEAD_RECKONING_REMNANTS_V1';
 
@@ -16,6 +17,8 @@ export class ActiveRemnantInstance {
   public currentFrameIdx = 0;
   public isFinished = false;
   public lastShotTime = 0;
+  public lastFrameFired = -1;
+  public lastReplayTime = 0;
 
   constructor(data: RemnantRun, scene: THREE.Scene) {
     this.data = data;
@@ -34,9 +37,11 @@ export class RemnantManager {
 
   // Active in-game recording for current run
   private isRecording = false;
-  private currentRunFrames: RemnantFrame[] = [];
+  private currentRunFramesP1: RemnantFrame[] = [];
+  private currentRunFramesP2: RemnantFrame[] = [];
   private runStartTime = 0;
-  private lastSampleTime = 0;
+  private lastSampleTimeP1 = 0;
+  private lastSampleTimeP2 = 0;
 
   // Run telemetry counters
   public currentKills = 0;
@@ -70,9 +75,11 @@ export class RemnantManager {
 
   public startRecording() {
     this.isRecording = true;
-    this.currentRunFrames = [];
+    this.currentRunFramesP1 = [];
+    this.currentRunFramesP2 = [];
     this.runStartTime = performance.now();
-    this.lastSampleTime = 0;
+    this.lastSampleTimeP1 = 0;
+    this.lastSampleTimeP2 = 0;
     this.currentKills = 0;
     this.currentScore = 0;
     this.currentDamage = 0;
@@ -84,6 +91,7 @@ export class RemnantManager {
   }
 
   public recordPlayerSample(
+    playerId: 'P1' | 'P2',
     pos: THREE.Vector3,
     rotY: number,
     pitch: number,
@@ -96,17 +104,26 @@ export class RemnantManager {
     const now = performance.now();
     const elapsed = now - this.runStartTime;
 
+    const targetList = playerId === 'P2' ? this.currentRunFramesP2 : this.currentRunFramesP1;
+    const lastSampleTime = playerId === 'P2' ? this.lastSampleTimeP2 : this.lastSampleTimeP1;
+
     // Track distance
-    if (this.lastPlayerPos) {
-      this.currentDistanceTraveled += pos.distanceTo(this.lastPlayerPos);
+    if (playerId === 'P1') {
+      if (this.lastPlayerPos) {
+        this.currentDistanceTraveled += pos.distanceTo(this.lastPlayerPos);
+      }
+      this.lastPlayerPos = pos.clone();
     }
-    this.lastPlayerPos = pos.clone();
 
-    // Sample every 50ms (20fps telemetry replay is butter-smooth with interpolation)
-    if (now - this.lastSampleTime >= 50 || action !== 'none') {
-      this.lastSampleTime = now;
+    // Sample every 50ms (20fps telemetry replay is smooth with interpolation)
+    if (now - lastSampleTime >= 50 || action !== 'none') {
+      if (playerId === 'P2') {
+        this.lastSampleTimeP2 = now;
+      } else {
+        this.lastSampleTimeP1 = now;
+      }
 
-      this.currentRunFrames.push({
+      targetList.push({
         t: Math.floor(elapsed),
         pos: [Number(pos.x.toFixed(2)), Number(pos.y.toFixed(2)), Number(pos.z.toFixed(2))],
         rotY: Number(rotY.toFixed(3)),
@@ -123,8 +140,56 @@ export class RemnantManager {
     }
   }
 
+  public deploySingleRemnant(run: RemnantRun): ActiveRemnantInstance {
+    const inst = new ActiveRemnantInstance(run, this.scene);
+    this.activeRemnants.push(inst);
+    return inst;
+  }
+
+  public finishAndSavePlayerRun(playerId: 'P1' | 'P2', causeOfDeath: string): RemnantRun | null {
+    const frames = playerId === 'P2' ? this.currentRunFramesP2 : this.currentRunFramesP1;
+    if (frames.length < 10) return null;
+
+    const survivalSeconds = Math.max(1, Math.floor((performance.now() - this.runStartTime) / 1000));
+    const savedRuns = this.getSavedRuns();
+    const runNumber = savedRuns.length + 1;
+    const color = playerId === 'P2' ? '#ff9900' : '#00e1ff';
+
+    const run: RemnantRun = {
+      id: `remnant-${playerId}-${Date.now()}`,
+      runNumber,
+      timestamp: Date.now(),
+      survivalTime: survivalSeconds,
+      kills: Math.max(1, Math.floor(this.currentKills * 0.5)),
+      score: Math.max(100, Math.floor(this.currentScore * 0.5)),
+      damageDealt: Math.floor(this.currentDamage * 0.5),
+      shotsFired: this.currentShotsFired,
+      shotsHit: this.currentShotsHit,
+      distanceTraveled: Math.floor(this.currentDistanceTraveled * 0.5),
+      primaryWeapon: 'RIFLE',
+      playstyle: playerId === 'P2' ? 'RUNNER' : 'DEFENDER',
+      causeOfDeath: `${playerId}: ${causeOfDeath}`,
+      frames: [...frames],
+      color,
+      activeInRun: true,
+    };
+
+    savedRuns.unshift(run);
+    if (savedRuns.length > 10) savedRuns.pop();
+
+    try {
+      safeStorage.setItem(STORAGE_KEY, JSON.stringify(savedRuns));
+    } catch (e) {
+      console.warn('Storage save error:', e);
+    }
+
+    // Immediately deploy so fallen player fights alongside survivor!
+    this.deploySingleRemnant(run);
+    return run;
+  }
+
   public finishAndSaveRun(causeOfDeath: string): RemnantRun | null {
-    if (!this.isRecording || this.currentRunFrames.length < 15) {
+    if (!this.isRecording || this.currentRunFramesP1.length < 15) {
       this.isRecording = false;
       return null;
     }
@@ -163,7 +228,7 @@ export class RemnantManager {
       primaryWeapon: bestW,
       playstyle,
       causeOfDeath,
-      frames: this.currentRunFrames,
+      frames: this.currentRunFramesP1,
       color,
       activeInRun: true,
     };
@@ -173,7 +238,7 @@ export class RemnantManager {
     if (savedRuns.length > 10) savedRuns.pop();
 
     try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(savedRuns));
+      safeStorage.setItem(STORAGE_KEY, JSON.stringify(savedRuns));
     } catch (e) {
       console.warn('Storage save error:', e);
     }
@@ -210,7 +275,7 @@ export class RemnantManager {
 
   public getSavedRuns(): RemnantRun[] {
     try {
-      const raw = localStorage.getItem(STORAGE_KEY);
+      const raw = safeStorage.getItem(STORAGE_KEY);
       if (raw) {
         return JSON.parse(raw);
       }
@@ -301,8 +366,15 @@ export class RemnantManager {
       // 2. Playback Timeline Interpolation
       const frames = rem.data.frames;
       // Loop or pause at end
-      const runDuration = frames[frames.length - 1].t;
+      const runDuration = Math.max(1, frames[frames.length - 1].t);
       const replayTime = currentMatchTimeMs % runDuration;
+
+      // Handle loop reset cleanly
+      if (replayTime < rem.lastReplayTime) {
+        rem.currentFrameIdx = 0;
+        rem.lastFrameFired = -1;
+      }
+      rem.lastReplayTime = replayTime;
 
       // Find surrounding frames
       let idx = rem.currentFrameIdx;
@@ -342,7 +414,8 @@ export class RemnantManager {
       this.vfx.spawnRemnantGhostTrail(currentPos, parseInt(rem.data.color.replace('#', '0x'), 16));
 
       // 3. Reproduce Recorded Shooting Actions with Real Combat Utility!
-      if (f0.action === 'shoot' && currentMatchTimeMs - rem.lastShotTime > 150) {
+      if (f0.action === 'shoot' && rem.lastFrameFired !== idx) {
+        rem.lastFrameFired = idx;
         rem.lastShotTime = currentMatchTimeMs;
         rem.model.triggerShootRecoil();
 

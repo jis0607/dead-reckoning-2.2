@@ -48,12 +48,12 @@ export const HowToPlayModal: React.FC<HowToPlayModalProps> = ({ onClose }) => {
         </div>
 
         {/* Section 2: Controls Matrix */}
-        <div className="space-y-3 font-mono text-xs">
-          <div className="text-slate-400 uppercase font-bold tracking-wider text-[11px]">
-            FIELD CONTROLS
+        <div className="space-y-4 font-mono text-xs">
+          <div className="text-slate-400 uppercase font-bold tracking-wider text-[11px] flex items-center justify-between">
+            <span>FIELD CONTROLS // DESKTOP KEYBOARD & MOUSE</span>
           </div>
 
-          <div className="grid grid-cols-2 gap-2 text-slate-300">
+          <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 text-slate-300">
             <div className="flex justify-between p-2 rounded bg-slate-950 border border-slate-800">
               <span className="text-slate-500">WASD</span>
               <span className="font-bold text-white">Movement</span>
@@ -63,20 +63,20 @@ export const HowToPlayModal: React.FC<HowToPlayModalProps> = ({ onClose }) => {
               <span className="font-bold text-white">Aim / Look</span>
             </div>
             <div className="flex justify-between p-2 rounded bg-slate-950 border border-slate-800">
-              <span className="text-slate-500">LEFT CLICK</span>
+              <span className="text-slate-500">L-CLICK</span>
               <span className="font-bold text-rose-400">Fire Weapon</span>
             </div>
             <div className="flex justify-between p-2 rounded bg-slate-950 border border-slate-800">
-              <span className="text-slate-500">RIGHT CLICK</span>
-              <span className="font-bold text-cyan-400">Aim Down Sights (ADS)</span>
+              <span className="text-slate-500">R-CLICK</span>
+              <span className="font-bold text-cyan-400">Aim (ADS)</span>
             </div>
             <div className="flex justify-between p-2 rounded bg-slate-950 border border-slate-800">
               <span className="text-slate-500">SHIFT</span>
-              <span className="font-bold text-amber-400">Tactical Sprint</span>
+              <span className="font-bold text-amber-400">Sprint</span>
             </div>
             <div className="flex justify-between p-2 rounded bg-slate-950 border border-slate-800">
               <span className="text-slate-500">SPACE</span>
-              <span className="font-bold text-amber-400">Dodge Roll (I-Frames)</span>
+              <span className="font-bold text-amber-400">Dodge Roll</span>
             </div>
             <div className="flex justify-between p-2 rounded bg-slate-950 border border-slate-800">
               <span className="text-slate-500">R</span>
@@ -84,23 +84,54 @@ export const HowToPlayModal: React.FC<HowToPlayModalProps> = ({ onClose }) => {
             </div>
             <div className="flex justify-between p-2 rounded bg-slate-950 border border-slate-800">
               <span className="text-slate-500">E</span>
-              <span className="font-bold text-emerald-400">Interact (Crates/Beacon)</span>
+              <span className="font-bold text-emerald-400">Interact</span>
             </div>
             <div className="flex justify-between p-2 rounded bg-slate-950 border border-slate-800">
               <span className="text-slate-500">F / V</span>
-              <span className="font-bold text-orange-400">Melee Strike / Kick</span>
+              <span className="font-bold text-orange-400">Melee Strike</span>
             </div>
             <div className="flex justify-between p-2 rounded bg-slate-950 border border-slate-800">
               <span className="text-slate-500">T</span>
-              <span className="font-bold text-amber-300">Toggle Day / Night Mode</span>
+              <span className="font-bold text-amber-300">Day / Night</span>
             </div>
             <div className="flex justify-between p-2 rounded bg-slate-950 border border-slate-800">
               <span className="text-slate-500">1 - 5 / WHEEL</span>
-              <span className="font-bold text-white">Switch Weapon</span>
+              <span className="font-bold text-white">Switch Gun</span>
             </div>
             <div className="flex justify-between p-2 rounded bg-slate-950 border border-slate-800">
               <span className="text-slate-500">ESC</span>
-              <span className="font-bold text-white">Pause Simulator</span>
+              <span className="font-bold text-white">Pause</span>
+            </div>
+          </div>
+
+          {/* Gamepad & Mobile Touch Summary */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-2">
+            <div className="p-3 rounded bg-slate-950/80 border border-cyan-500/30 space-y-1.5">
+              <div className="text-[10px] text-cyan-400 uppercase font-bold tracking-wider">
+                🎮 GAMEPAD SUPPORT (XBOX / PLAYSTATION)
+              </div>
+              <div className="text-[11px] text-slate-300 space-y-0.5">
+                <div>• Left Stick: Analog Walk / Run</div>
+                <div>• Right Stick: Camera Look & Aim</div>
+                <div>• RT / R2: Fire Gun | LT / L2: Aim Down Sights</div>
+                <div>• A / Cross: Dodge Roll | X / Square: Reload</div>
+                <div>• B / R3: Melee Bash | Y / R1: Switch Gun</div>
+                <div>• Start: Pause Combat</div>
+              </div>
+            </div>
+
+            <div className="p-3 rounded bg-slate-950/80 border border-amber-500/30 space-y-1.5">
+              <div className="text-[10px] text-amber-400 uppercase font-bold tracking-wider">
+                📱 MOBILE & TABLET TOUCH CONTROLS
+              </div>
+              <div className="text-[11px] text-slate-300 space-y-0.5">
+                <div>• Left Virtual Stick: Analog 360° Movement</div>
+                <div>• Right Half Screen: Swipe / Drag to Look & Aim</div>
+                <div>• Red Crosshair Button: Primary Gunfire</div>
+                <div>• Eye Button: Aim Down Sights (ADS)</div>
+                <div>• Fist & Flash Buttons: Quick Melee & Dodge Roll</div>
+                <div>• Cycle Button: Quick Arsenal Switch</div>
+              </div>
             </div>
           </div>
         </div>
@@ -109,7 +140,7 @@ export const HowToPlayModal: React.FC<HowToPlayModalProps> = ({ onClose }) => {
         <div className="p-3 rounded bg-slate-950 border border-slate-800 font-mono text-xs space-y-1">
           <span className="text-amber-400 font-bold uppercase">MISSION OBJECTIVE:</span>
           <p className="text-slate-400 leading-relaxed">
-            Survive escalating zombie waves, defeat <strong className="text-rose-400">THE RECKONER</strong> boss at Wave 5, activate the Helipad extraction beacon, and extract safely to seal the anomaly.
+            Survive escalating zombie waves, defeat <strong className="text-rose-400">THE RECKONER</strong> boss at Wave 5, activate the Helipad extraction beacon, and hold position inside the extraction zone until evacuation completes!
           </p>
         </div>
 

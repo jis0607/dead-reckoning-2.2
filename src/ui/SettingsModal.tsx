@@ -1,8 +1,11 @@
-import React, { useState } from 'react';
-import { X, Volume2, Sliders, Eye, Sparkles, Sun, Moon } from 'lucide-react';
+import React, { useState, useEffect } from 'react';
+import { X, Volume2, Sliders, Eye, Sparkles, Sun, Moon, Smartphone } from 'lucide-react';
 import { GameSettings } from '../types/game';
 import { soundManager } from '../audio/SoundManager';
 import { GameEngine } from '../core/GameEngine';
+import { safeStorage } from '../utils/storage';
+
+const SETTINGS_STORAGE_KEY = 'DEAD_RECKONING_SETTINGS_V1';
 
 interface SettingsModalProps {
   onClose: () => void;
@@ -11,27 +14,79 @@ interface SettingsModalProps {
 }
 
 export const SettingsModal: React.FC<SettingsModalProps> = ({ onClose, engine, onUpdateSettings }) => {
-  const [masterVolume, setMasterVolume] = useState(80);
-  const [sfxVolume, setSfxVolume] = useState(85);
-  const [musicVolume, setMusicVolume] = useState(50);
-  const [sensitivity, setSensitivity] = useState(10);
-  const [invertY, setInvertY] = useState(false);
+  const currentSoundSettings = soundManager.getSettings();
+
+  const [masterVolume, setMasterVolume] = useState(Math.round(currentSoundSettings.masterVolume * 100));
+  const [sfxVolume, setSfxVolume] = useState(Math.round(currentSoundSettings.sfxVolume * 100));
+  const [musicVolume, setMusicVolume] = useState(Math.round(currentSoundSettings.musicVolume * 100));
+  const [sensitivity, setSensitivity] = useState(engine ? Math.round(engine.input.sensitivity * 10) : 10);
+  const [touchSensitivity, setTouchSensitivity] = useState(engine ? Math.round(engine.input.touchSensitivity * 10) : 12);
+  const [invertY, setInvertY] = useState(engine ? engine.input.invertY : false);
   const [lightingMode, setLightingMode] = useState<'DAY' | 'NIGHT'>(engine?.lightingMode || 'DAY');
+  const [forceTouchControls, setForceTouchControls] = useState(engine ? engine.input.isTouchDevice : false);
+
+  const saveSettingsToStorage = (updated: any) => {
+    try {
+      const existing = safeStorage.getItem(SETTINGS_STORAGE_KEY);
+      const parsed = existing ? JSON.parse(existing) : {};
+      const merged = { ...parsed, ...updated };
+      safeStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(merged));
+    } catch (e) {
+      console.warn('Failed to save settings:', e);
+    }
+  };
 
   const handleMasterChange = (val: number) => {
     setMasterVolume(val);
     soundManager.updateSettings({ masterVolume: val / 100 });
+    saveSettingsToStorage({ masterVolume: val / 100 });
   };
 
   const handleSfxChange = (val: number) => {
     setSfxVolume(val);
     soundManager.updateSettings({ sfxVolume: val / 100 });
     soundManager.playClick(0, 1000, 0.05);
+    saveSettingsToStorage({ sfxVolume: val / 100 });
   };
 
   const handleMusicChange = (val: number) => {
     setMusicVolume(val);
     soundManager.updateSettings({ musicVolume: val / 100 });
+    saveSettingsToStorage({ musicVolume: val / 100 });
+  };
+
+  const handleSensitivityChange = (val: number) => {
+    setSensitivity(val);
+    if (engine) {
+      engine.input.sensitivity = val / 10;
+    }
+    saveSettingsToStorage({ mouseSensitivity: val / 10 });
+  };
+
+  const handleTouchSensitivityChange = (val: number) => {
+    setTouchSensitivity(val);
+    if (engine) {
+      engine.input.touchSensitivity = val / 10;
+    }
+    saveSettingsToStorage({ touchSensitivity: val / 10 });
+  };
+
+  const handleToggleInvertY = () => {
+    const next = !invertY;
+    setInvertY(next);
+    if (engine) {
+      engine.input.invertY = next;
+    }
+    saveSettingsToStorage({ invertY: next });
+  };
+
+  const handleToggleTouchControls = () => {
+    const next = !forceTouchControls;
+    setForceTouchControls(next);
+    if (engine) {
+      engine.input.isTouchDevice = next;
+    }
+    saveSettingsToStorage({ isTouchDevice: next });
   };
 
   const handleLightingChange = (mode: 'DAY' | 'NIGHT') => {
@@ -39,6 +94,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ onClose, engine, o
     if (engine) {
       engine.setLightingMode(mode);
     }
+    saveSettingsToStorage({ lightingMode: mode });
   };
 
   return (
@@ -179,12 +235,46 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ onClose, engine, o
             />
           </div>
 
+          {/* Touch Screen Drag Sensitivity */}
+          <div className="space-y-2 pt-2 border-t border-slate-800">
+            <div className="flex justify-between text-slate-300">
+              <span className="flex items-center gap-1.5">
+                <Smartphone className="w-3.5 h-3.5 text-cyan-400" /> TOUCH CAMERA SENSITIVITY
+              </span>
+              <span className="font-bold text-cyan-400">{touchSensitivity / 10}x</span>
+            </div>
+            <input
+              type="range"
+              min="4"
+              max="30"
+              value={touchSensitivity}
+              onChange={(e) => handleTouchSensitivityChange(Number(e.target.value))}
+              className="w-full accent-cyan-400 bg-slate-800 rounded-lg cursor-pointer"
+            />
+          </div>
+
+          {/* Force Mobile Touch Controls Toggle */}
+          <div className="flex items-center justify-between pt-2 border-t border-slate-800">
+            <div className="space-y-0.5">
+              <div className="text-slate-300 font-bold">VIRTUAL TOUCH CONTROLS</div>
+              <div className="text-[10px] text-slate-500">SHOW ON-SCREEN JOYSTICK & BUTTONS</div>
+            </div>
+            <button
+              onClick={handleToggleTouchControls}
+              className={`px-3 py-1 rounded font-bold transition-colors cursor-pointer ${
+                forceTouchControls ? 'bg-cyan-500 text-slate-950' : 'bg-slate-800 text-slate-400'
+              }`}
+            >
+              {forceTouchControls ? 'ENABLED' : 'AUTO/DISABLED'}
+            </button>
+          </div>
+
           {/* Invert Y Toggle */}
-          <div className="flex items-center justify-between pt-2">
+          <div className="flex items-center justify-between pt-2 border-t border-slate-800">
             <span className="text-slate-300">INVERT PITCH (Y-AXIS)</span>
             <button
-              onClick={() => setInvertY(!invertY)}
-              className={`px-3 py-1 rounded font-bold transition-colors ${
+              onClick={handleToggleInvertY}
+              className={`px-3 py-1 rounded font-bold transition-colors cursor-pointer ${
                 invertY ? 'bg-cyan-500 text-slate-950' : 'bg-slate-800 text-slate-400'
               }`}
             >

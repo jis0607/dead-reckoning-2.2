@@ -1,3 +1,8 @@
+export type GameMode = 'SOLO' | 'LOCAL_COOP' | 'ONLINE_COOP';
+export type PlayerId = 'P1' | 'P2';
+export type PlayerStateStatus = 'ALIVE' | 'DOWNED' | 'DEAD';
+export type P2ControlScheme = 'GAMEPAD' | 'KEYBOARD_SPLIT';
+
 export type Playstyle = 'AGGRESSIVE' | 'MARKSMAN' | 'RUNNER' | 'DEFENDER' | 'SCAVENGER' | 'BERSERKER';
 
 export type ZombieType = 'SHAMBLER' | 'RUNNER' | 'BRUTE' | 'SPITTER' | 'HUNTER' | 'BOSS_RECKONER';

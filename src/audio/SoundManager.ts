@@ -1,4 +1,7 @@
 import { GameSettings } from '../types/game';
+import { safeStorage } from '../utils/storage';
+
+const AUDIO_SETTINGS_KEY = 'DEAD_RECKONING_SETTINGS_V1';
 
 class SoundManager {
   private ctx: AudioContext | null = null;
@@ -7,10 +10,14 @@ class SoundManager {
   private musicGain: GainNode | null = null;
   private ambientGain: GainNode | null = null;
 
-  private isMuted: boolean = false;
+  public isMuted: boolean = false;
+  private isWindowBlurred: boolean = false;
   private rainNode: AudioBufferSourceNode | null = null;
   private ambientOsc: OscillatorNode | null = null;
   private musicInterval: number | null = null;
+
+  // Pre-allocated noise buffer pool to eliminate runtime allocations
+  private cachedNoiseBuffer: AudioBuffer | null = null;
 
   private settings: GameSettings = {
     masterVolume: 0.8,
@@ -26,17 +33,57 @@ class SoundManager {
   };
 
   constructor() {
-    // Lazy initialize on first interaction
+    this.loadSettings();
+    this.bindAutoResume();
+  }
+
+  private loadSettings() {
+    try {
+      const saved = safeStorage.getItem(AUDIO_SETTINGS_KEY);
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        this.settings = { ...this.settings, ...parsed };
+      }
+    } catch (e) {
+      console.warn('Failed to parse saved audio settings:', e);
+    }
+  }
+
+  public getSettings(): GameSettings {
+    return { ...this.settings };
+  }
+
+  private bindAutoResume() {
+    if (typeof window === 'undefined') return;
+    const resumeOnGesture = () => {
+      if (this.ctx && this.ctx.state === 'suspended') {
+        this.ctx.resume().catch(() => {});
+      }
+    };
+    window.addEventListener('pointerdown', resumeOnGesture, { passive: true });
+    window.addEventListener('touchstart', resumeOnGesture, { passive: true });
+    window.addEventListener('keydown', resumeOnGesture, { passive: true });
   }
 
   public init() {
-    if (this.ctx) return;
+    if (this.ctx) {
+      if (this.ctx.state === 'suspended') {
+        this.ctx.resume().catch(() => {});
+      }
+      return;
+    }
     try {
       const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
       this.ctx = new AudioCtx();
 
+      // Ensure resumed
+      if (this.ctx.state === 'suspended') {
+        this.ctx.resume().catch(() => {});
+      }
+
       this.masterGain = this.ctx.createGain();
-      this.masterGain.gain.setValueAtTime(this.settings.masterVolume, this.ctx.currentTime);
+      const effectiveMaster = this.isMuted || this.isWindowBlurred ? 0 : this.settings.masterVolume;
+      this.masterGain.gain.setValueAtTime(effectiveMaster, this.ctx.currentTime);
       this.masterGain.connect(this.ctx.destination);
 
       this.sfxGain = this.ctx.createGain();
@@ -51,6 +98,9 @@ class SoundManager {
       this.ambientGain.gain.setValueAtTime(0.4, this.ctx.currentTime);
       this.ambientGain.connect(this.masterGain);
 
+      // Pre-generate reusable noise buffer (2.0s duration) to completely eliminate allocation GC stutter
+      this.initPrecomputedNoiseBuffer();
+
       this.startRainAmbience();
       this.startDarkSynthDrone();
     } catch (e) {
@@ -58,12 +108,59 @@ class SoundManager {
     }
   }
 
+  private initPrecomputedNoiseBuffer() {
+    if (!this.ctx) return;
+    try {
+      const length = Math.floor(this.ctx.sampleRate * 2.0);
+      this.cachedNoiseBuffer = this.ctx.createBuffer(1, length, this.ctx.sampleRate);
+      const data = this.cachedNoiseBuffer.getChannelData(0);
+      for (let i = 0; i < length; i++) {
+        data[i] = (Math.random() * 2 - 1);
+      }
+    } catch (e) {
+      console.warn('Failed to precompute noise buffer:', e);
+    }
+  }
+
+  public setMuted(muted: boolean) {
+    this.isMuted = muted;
+    this.applyMasterGain();
+  }
+
+  public toggleMute(): boolean {
+    this.setMuted(!this.isMuted);
+    return this.isMuted;
+  }
+
+  public handleVisibilityChange(visible: boolean) {
+    this.isWindowBlurred = !visible;
+    this.applyMasterGain();
+    if (visible && this.ctx && this.ctx.state === 'suspended') {
+      this.ctx.resume().catch(() => {});
+    }
+  }
+
+  private applyMasterGain() {
+    if (!this.ctx || !this.masterGain) return;
+    const now = this.ctx.currentTime;
+    const target = this.isMuted || this.isWindowBlurred ? 0 : this.settings.masterVolume;
+    this.masterGain.gain.setTargetAtTime(target, now, 0.05);
+  }
+
   public updateSettings(newSettings: Partial<GameSettings>) {
     Object.assign(this.settings, newSettings);
+    try {
+      safeStorage.setItem(AUDIO_SETTINGS_KEY, JSON.stringify(this.settings));
+    } catch (e) {
+      console.warn('Failed to save settings:', e);
+    }
+
     if (!this.ctx) return;
     const now = this.ctx.currentTime;
     if (this.masterGain && newSettings.masterVolume !== undefined) {
-      this.masterGain.gain.setTargetAtTime(newSettings.masterVolume, now, 0.05);
+      if (!this.isMuted && !this.isWindowBlurred) {
+        this.masterGain.gain.setTargetAtTime(newSettings.masterVolume, now, 0.05);
+      }
     }
     if (this.sfxGain && newSettings.sfxVolume !== undefined) {
       this.sfxGain.gain.setTargetAtTime(newSettings.sfxVolume, now, 0.05);
@@ -581,15 +678,16 @@ class SoundManager {
   private playNoiseSnap(duration: number, cutoff: number, volume: number, isGlitch = false) {
     if (!this.ctx || !this.sfxGain) return;
     const now = this.ctx.currentTime;
-    const bufferSize = Math.floor(this.ctx.sampleRate * duration);
-    const buffer = this.ctx.createBuffer(1, bufferSize, this.ctx.sampleRate);
-    const data = buffer.getChannelData(0);
-    for (let i = 0; i < bufferSize; i++) {
-      data[i] = (Math.random() * 2 - 1) * (1 - i / bufferSize);
+
+    // Use cached noise buffer or fallback to safe allocation once
+    if (!this.cachedNoiseBuffer) {
+      this.initPrecomputedNoiseBuffer();
     }
+    if (!this.cachedNoiseBuffer) return;
 
     const noise = this.ctx.createBufferSource();
-    noise.buffer = buffer;
+    noise.buffer = this.cachedNoiseBuffer;
+    noise.loop = true;
 
     const filter = this.ctx.createBiquadFilter();
     filter.type = isGlitch ? 'bandpass' : 'lowpass';
@@ -602,7 +700,10 @@ class SoundManager {
     noise.connect(filter);
     filter.connect(gain);
     gain.connect(this.sfxGain);
-    noise.start(now);
+
+    // Randomize playback start offset within the 2-second pre-allocated buffer
+    const randomOffset = Math.random() * 1.5;
+    noise.start(now, randomOffset);
     noise.stop(now + duration);
   }
 

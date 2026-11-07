@@ -33,6 +33,19 @@ export class PlayerController {
   public maxStamina = 100;
   public isDead = false;
 
+  // Co-Op & Downed Mechanics
+  public playerId: 'P1' | 'P2' = 'P1';
+  public teammate: PlayerController | null = null;
+  public isDowned = false;
+  public downedTimer = 30.0;
+  public isBeingRevived = false;
+  public reviveProgress = 0;
+  public isRevivingTeammate = false;
+
+  public get inputState() {
+    return this.playerId === 'P2' ? this.input.stateP2 : this.input.stateP1;
+  }
+
   // Dash & Mobility
   public isDashing = false;
   public dashTimer = 0;
@@ -70,7 +83,8 @@ export class PlayerController {
     vfx: VFXSystem,
     map: CityMap,
     enemyManager: EnemyManager,
-    remnantManager: RemnantManager
+    remnantManager: RemnantManager,
+    playerId: 'P1' | 'P2' = 'P1'
   ) {
     this.scene = scene;
     this.camera = camera;
@@ -79,22 +93,29 @@ export class PlayerController {
     this.map = map;
     this.enemyManager = enemyManager;
     this.remnantManager = remnantManager;
+    this.playerId = playerId;
 
-    this.model = new CharacterModel(false);
+    this.model = new CharacterModel(false, 0x00ffee, this.playerId);
     this.scene.add(this.model.root);
 
     this.weapons = new WeaponInventory();
     this.resetPlayer();
   }
 
-  public resetPlayer(spawnPos = new THREE.Vector3(0, 0, 8)) {
-    this.position.copy(spawnPos);
+  public resetPlayer(spawnPos?: THREE.Vector3) {
+    const defaultPos = this.playerId === 'P2' ? new THREE.Vector3(1.8, 0, 8) : new THREE.Vector3(-1.8, 0, 8);
+    this.position.copy(spawnPos || defaultPos);
     this.velocity.set(0, 0, 0);
     this.yaw = 0;
     this.pitch = 0;
     this.hp = this.maxHp;
     this.stamina = this.maxStamina;
     this.isDead = false;
+    this.isDowned = false;
+    this.downedTimer = 30.0;
+    this.isBeingRevived = false;
+    this.reviveProgress = 0;
+    this.isRevivingTeammate = false;
     this.isDashing = false;
     this.dashTimer = 0;
     this.dashCooldown = 0;
@@ -110,27 +131,62 @@ export class PlayerController {
       return;
     }
 
-    // 1. Mouse Look Updates
-    const { dx, dy } = this.input.consumeDeltas();
+    // Downed state handling in Co-Op
+    if (this.isDowned) {
+      if (!this.isBeingRevived) {
+        this.downedTimer -= dt;
+        if (this.downedTimer <= 0) {
+          this.isDead = true;
+          this.isDowned = false;
+          if (this.onPlayerDied) this.onPlayerDied('Bled out in combat');
+          return;
+        }
+      }
+      this.isBeingRevived = false; // Reset per-frame
+
+      const { dx, dy } = this.input.consumeDeltas(this.playerId);
+      this.yaw -= dx * 0.5;
+      this.pitch = Math.max(-0.6, Math.min(0.6, this.pitch - dy * 0.5));
+
+      this.updateCrawlMovement(dt);
+      this.updateCamera(dt);
+      this.model.updateAnimation(dt, 'downed', this.pitch, false);
+
+      this.remnantManager.recordPlayerSample(
+        this.playerId,
+        this.position,
+        this.yaw,
+        this.pitch,
+        'idle',
+        this.weapons.activeWeapon
+      );
+      return;
+    }
+
+    // 1. Look Updates (isolated per player)
+    const { dx, dy } = this.input.consumeDeltas(this.playerId);
     this.yaw -= dx;
     this.pitch = Math.max(-1.3, Math.min(1.3, this.pitch - dy));
 
     // 2. Weapon Slot Inputs
-    if (this.input.state.slot1) this.switchWeapon('PISTOL');
-    if (this.input.state.slot2) this.switchWeapon('RIFLE');
-    if (this.input.state.slot3) this.switchWeapon('SHOTGUN');
-    if (this.input.state.slot4) this.switchWeapon('SMG');
-    if (this.input.state.slot5) this.switchWeapon('LAUNCHER');
+    if (this.inputState.slot1) this.switchWeapon('PISTOL');
+    if (this.inputState.slot2) this.switchWeapon('RIFLE');
+    if (this.inputState.slot3) this.switchWeapon('SHOTGUN');
+    if (this.inputState.slot4) this.switchWeapon('SMG');
+    if (this.inputState.slot5) this.switchWeapon('LAUNCHER');
 
-    if (this.input.state.switchNext) {
+    if (this.inputState.switchNext) {
       this.cycleWeapon(1);
-    } else if (this.input.state.switchPrev) {
+      this.inputState.switchNext = false;
+    } else if (this.inputState.switchPrev) {
       this.cycleWeapon(-1);
+      this.inputState.switchPrev = false;
     }
 
-    if (this.input.state.reload) {
+    if (this.inputState.reload) {
       this.weapons.startReload();
       this.model.triggerReload();
+      this.inputState.reload = false;
     }
 
     this.weapons.update(dt);
@@ -142,7 +198,7 @@ export class PlayerController {
     this.updateMelee(dt);
     this.updateShooting(dt);
 
-    // 5. Interaction Check (Supply crates & Extraction beacon)
+    // 5. Interaction Check (Teammate Revive, Supply crates & Extraction beacon)
     this.checkInteractions();
 
     // 6. Camera Position Follow & Recoil Decay
@@ -152,12 +208,13 @@ export class PlayerController {
     let animState: 'idle' | 'walk' | 'run' | 'sprint' | 'dash' = 'idle';
     if (this.isDashing) animState = 'dash';
     else if (this.moveDir.lengthSq() > 0.01) {
-      animState = this.input.state.sprint && this.stamina > 10 ? 'sprint' : 'run';
+      animState = this.inputState.sprint && this.stamina > 10 ? 'sprint' : 'run';
     }
 
-    this.model.updateAnimation(dt, animState, this.pitch, this.input.state.aim);
+    this.model.updateAnimation(dt, animState, this.pitch, this.inputState.aim);
 
     this.remnantManager.recordPlayerSample(
+      this.playerId,
       this.position,
       this.yaw,
       this.pitch,
@@ -185,7 +242,7 @@ export class PlayerController {
     if (this.dashCooldown > 0) this.dashCooldown -= dt;
 
     // Stamina recovery
-    if (!this.input.state.sprint && !this.isDashing) {
+    if (!this.inputState.sprint && !this.isDashing) {
       this.stamina = Math.min(this.maxStamina, this.stamina + dt * 25);
     }
 
@@ -194,13 +251,19 @@ export class PlayerController {
     this.right.set(Math.cos(this.yaw), 0, -Math.sin(this.yaw)).normalize();
 
     this.moveDir.set(0, 0, 0);
-    if (this.input.state.forward) this.moveDir.add(this.forward);
-    if (this.input.state.backward) this.moveDir.sub(this.forward);
-    if (this.input.state.right) this.moveDir.add(this.right);
-    if (this.input.state.left) this.moveDir.sub(this.right);
+    if (this.inputState.hasAnalogMove) {
+      // Smooth 360-degree analog control from virtual joystick or gamepad
+      this.moveDir.addScaledVector(this.forward, this.inputState.moveY);
+      this.moveDir.addScaledVector(this.right, this.inputState.moveX);
+    } else {
+      if (this.inputState.forward) this.moveDir.add(this.forward);
+      if (this.inputState.backward) this.moveDir.sub(this.forward);
+      if (this.inputState.right) this.moveDir.add(this.right);
+      if (this.inputState.left) this.moveDir.sub(this.right);
+    }
 
     // Dash initiation
-    if (this.input.state.dash && this.dashCooldown <= 0 && this.stamina >= 25 && !this.isDashing) {
+    if (this.inputState.dash && this.dashCooldown <= 0 && this.stamina >= 25 && !this.isDashing) {
       this.isDashing = true;
       this.dashTimer = 0.28;
       this.dashCooldown = 0.85;
@@ -217,10 +280,10 @@ export class PlayerController {
       }
     } else {
       let speed = 4.2; // Base walk
-      if (this.input.state.sprint && this.stamina > 5 && this.moveDir.lengthSq() > 0.01) {
+      if (this.inputState.sprint && this.stamina > 5 && this.moveDir.lengthSq() > 0.01) {
         speed = 7.5;
         this.stamina -= dt * 18;
-      } else if (this.input.state.aim) {
+      } else if (this.inputState.aim) {
         speed = 2.4; // Aim down sights walk
       }
 
@@ -247,12 +310,45 @@ export class PlayerController {
     this.model.root.rotation.y = this.yaw;
   }
 
+  private updateCrawlMovement(dt: number) {
+    this.forward.set(Math.sin(this.yaw), 0, Math.cos(this.yaw)).normalize();
+    this.right.set(Math.cos(this.yaw), 0, -Math.sin(this.yaw)).normalize();
+
+    this.moveDir.set(0, 0, 0);
+    if (this.inputState.hasAnalogMove) {
+      this.moveDir.addScaledVector(this.forward, this.inputState.moveY);
+      this.moveDir.addScaledVector(this.right, this.inputState.moveX);
+    } else {
+      if (this.inputState.forward) this.moveDir.add(this.forward);
+      if (this.inputState.backward) this.moveDir.sub(this.forward);
+      if (this.inputState.right) this.moveDir.add(this.right);
+      if (this.inputState.left) this.moveDir.sub(this.right);
+    }
+
+    if (this.moveDir.lengthSq() > 0.01) {
+      this.moveDir.normalize();
+      this.velocity.copy(this.moveDir).multiplyScalar(1.2); // Slow crawling pace
+    } else {
+      this.velocity.set(0, 0, 0);
+    }
+
+    const nextPos = this.position.clone().addScaledVector(this.velocity, dt);
+    const collision = this.map.checkCollision(nextPos, 0.55);
+    if (collision.hit) {
+      nextPos.add(collision.pushOut);
+    }
+
+    this.position.copy(nextPos);
+    this.model.root.position.copy(this.position);
+    this.model.root.rotation.y = this.yaw;
+  }
+
   private updateMelee(dt: number) {
     if (this.meleeTimer > 0) {
       this.meleeTimer -= dt;
     }
 
-    if (this.input.state.melee && this.meleeTimer <= 0 && !this.isDead) {
+    if (this.inputState.melee && this.meleeTimer <= 0 && !this.isDead && !this.isDowned) {
       this.meleeTimer = this.meleeCooldown;
       this.model.triggerMelee();
       soundManager.playMeleeKick();
@@ -292,8 +388,9 @@ export class PlayerController {
   }
 
   private updateShooting(dt: number) {
+    if (this.isDowned) return; // Cannot shoot while downed
     const now = performance.now() / 1000;
-    const isShooting = this.input.state.shoot;
+    const isShooting = this.inputState.shoot;
 
     if (isShooting && this.weapons.canShoot(now)) {
       this.weapons.consumeShot(now);
@@ -303,7 +400,7 @@ export class PlayerController {
       const def = activeState.def;
 
       // Punchy recoil kick
-      this.cameraRecoilPitch += def.recoilKick * (this.input.state.aim ? 0.65 : 1.15);
+      this.cameraRecoilPitch += def.recoilKick * (this.inputState.aim ? 0.65 : 1.15);
       this.cameraRecoilYaw += (Math.random() - 0.5) * def.recoilKick * 0.6;
       this.cameraShake = Math.min(0.3, this.cameraShake + def.recoilKick * 0.9);
 
@@ -456,6 +553,7 @@ export class PlayerController {
   private detonateBarrel(barrel: CityMap['explosiveBarrels'][0]) {
     barrel.exploded = true;
     barrel.mesh.visible = false;
+    this.map.removeCollider(barrel.mesh);
     this.triggerExplosiveBlast(barrel.pos, 7.0, 320);
   }
 
@@ -495,15 +593,43 @@ export class PlayerController {
   private checkInteractions() {
     this.currentInteractPrompt = null;
     this.onInteractAction = undefined;
+    this.isRevivingTeammate = false;
+
+    // Check teammate revive in Co-Op
+    if (this.teammate && this.teammate.isDowned && !this.isDowned && !this.isDead) {
+      const d = this.position.distanceTo(this.teammate.position);
+      if (d < 3.0) {
+        const remaining = Math.max(0, Math.ceil(this.teammate.downedTimer));
+        const pct = Math.floor(this.teammate.reviveProgress * 100);
+        this.currentInteractPrompt = `HOLD [E / X] TO REVIVE ${this.teammate.playerId} (${remaining}s) [${pct}%]`;
+
+        if (this.inputState.interact) {
+          this.isRevivingTeammate = true;
+          this.teammate.isBeingRevived = true;
+          // Progress revive over 2.4 seconds
+          this.teammate.reviveProgress += 0.016 / 2.4;
+          this.vfx.spawnSparks(this.teammate.position, new THREE.Vector3(0, 1, 0), 0x00ff88);
+
+          if (this.teammate.reviveProgress >= 1.0) {
+            this.teammate.revive();
+            this.currentInteractPrompt = null;
+          }
+          return;
+        }
+      }
+    }
 
     // Check supply crates
     for (const crate of this.map.supplyCrates) {
       if (!crate.opened && this.position.distanceTo(crate.position) < 2.5) {
         const label = crate.type === 'AMMO' ? 'AMMO CRATE' : crate.type === 'HEALTH' ? 'MEDICAL SUPPLY' : 'UPGRADE PROTOCOL';
-        this.currentInteractPrompt = `[E] OPEN ${label}`;
+        this.currentInteractPrompt = `[E / X] OPEN ${label}`;
         this.onInteractAction = () => {
           crate.opened = true;
           crate.mesh.visible = false;
+          if (crate.colliderRef) {
+            this.map.removeCollider(crate.colliderRef);
+          }
           soundManager.playReload();
           if (crate.type === 'AMMO') {
             this.weapons.refillAllAmmo();
@@ -518,16 +644,19 @@ export class PlayerController {
     }
 
     // Check extraction beacon
-    if (this.map.extractionBeacon.active && this.position.distanceTo(this.map.extractionBeacon.pos) < 3.5) {
-      this.currentInteractPrompt = `[E] SECURE EXTRACTION HELIPAD`;
-      this.onInteractAction = () => {
-        // Trigger extraction complete
-      };
+    if (this.map.extractionBeacon.active) {
+      const inZone = this.map.isPlayerInExtractionZone(this.position, 6.5);
+      if (inZone) {
+        this.currentInteractPrompt = 'HELIPAD SECURE // HOLD POSITION';
+      } else {
+        const d = Math.round(this.position.distanceTo(this.map.extractionBeacon.pos));
+        this.currentInteractPrompt = `RETURN TO HELIPAD (${d}m)`;
+      }
     }
 
     // Trigger interact key
-    if (this.input.state.interact && this.onInteractAction) {
-      this.input.state.interact = false;
+    if (this.inputState.interact && this.onInteractAction) {
+      this.inputState.interact = false;
       this.onInteractAction();
     }
   }
@@ -535,14 +664,50 @@ export class PlayerController {
   public takeDamage(amount: number, cause = 'Zombie Swarm') {
     if (this.isDead || this.isDashing) return; // i-frames during roll
 
+    if (this.isDowned) {
+      // While downed, damage accelerates bleedout
+      this.downedTimer -= amount * 0.15;
+      this.vfx.spawnBloodSplatter(this.position);
+      if (this.downedTimer <= 0) {
+        this.isDead = true;
+        this.isDowned = false;
+        if (this.onPlayerDied) this.onPlayerDied(cause);
+      }
+      return;
+    }
+
     this.hp = Math.max(0, this.hp - amount);
     this.cameraShake = Math.min(0.4, this.cameraShake + 0.2);
     soundManager.playPlayerHurt();
 
     if (this.hp <= 0) {
-      this.isDead = true;
-      if (this.onPlayerDied) this.onPlayerDied(cause);
+      this.hp = 0;
+      // In Co-Op, if teammate is alive and not dead, enter downed state!
+      if (this.teammate && !this.teammate.isDead) {
+        this.enterDownedState();
+      } else {
+        this.isDead = true;
+        if (this.onPlayerDied) this.onPlayerDied(cause);
+      }
     }
+  }
+
+  public enterDownedState() {
+    this.isDowned = true;
+    this.hp = 0;
+    this.downedTimer = 30.0;
+    this.reviveProgress = 0;
+    this.isDashing = false;
+    soundManager.playZombieGroan(1.2);
+  }
+
+  public revive() {
+    this.isDowned = false;
+    this.hp = 45;
+    this.downedTimer = 30.0;
+    this.reviveProgress = 0;
+    this.vfx.spawnBloodSplatter(this.position);
+    soundManager.playLevelUp();
   }
 
   private updateCamera(dt: number) {

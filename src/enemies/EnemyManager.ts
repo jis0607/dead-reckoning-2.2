@@ -4,6 +4,14 @@ import { soundManager } from '../audio/SoundManager';
 import { VFXSystem } from '../effects/VFXSystem';
 import { CityMap } from '../environment/CityMap';
 
+export interface CombatPlayerTarget {
+  id: 'P1' | 'P2';
+  position: THREE.Vector3;
+  isDead: boolean;
+  isDowned: boolean;
+  takeDamage: (dmg: number) => void;
+}
+
 export interface ZombieInstance {
   id: number;
   type: ZombieType;
@@ -271,10 +279,22 @@ export class EnemyManager {
 
   public update(
     dt: number,
-    playerPos: THREE.Vector3,
+    playerTargets: CombatPlayerTarget[] | THREE.Vector3,
     remnantPositions: { pos: THREE.Vector3; id: string }[],
-    onPlayerDamage: (dmg: number) => void
+    onPlayerDamage?: (dmg: number) => void
   ) {
+    const targets: CombatPlayerTarget[] = Array.isArray(playerTargets)
+      ? playerTargets
+      : [
+          {
+            id: 'P1',
+            position: playerTargets,
+            isDead: false,
+            isDowned: false,
+            takeDamage: onPlayerDamage || (() => {}),
+          },
+        ];
+
     // 1. Update Projectiles
     for (let i = this.acidProjectiles.length - 1; i >= 0; i--) {
       const proj = this.acidProjectiles[i];
@@ -282,14 +302,19 @@ export class EnemyManager {
       proj.pos.addScaledVector(proj.vel, dt);
       proj.mesh.position.copy(proj.pos);
 
-      // Check hit player
-      if (proj.pos.distanceTo(playerPos) < 1.3) {
-        onPlayerDamage(proj.damage);
-        this.vfx.spawnSpitAcid(proj.pos, proj.vel.clone().negate());
-        this.scene.remove(proj.mesh);
-        this.acidProjectiles.splice(i, 1);
-        continue;
+      // Check hit any alive player
+      let hitPlayer = false;
+      for (const p of targets) {
+        if (!p.isDead && proj.pos.distanceTo(p.position) < 1.3) {
+          p.takeDamage(proj.damage);
+          this.vfx.spawnSpitAcid(proj.pos, proj.vel.clone().negate());
+          this.scene.remove(proj.mesh);
+          this.acidProjectiles.splice(i, 1);
+          hitPlayer = true;
+          break;
+        }
       }
+      if (hitPlayer) continue;
 
       // Check hit ground / expired
       if (proj.pos.y <= 0.1 || proj.life <= 0) {
@@ -345,10 +370,24 @@ export class EnemyManager {
         z.attackTimer -= dt;
       }
 
-      // Target selection: Determine closest between Player and active Remnants!
-      let bestTarget = playerPos;
-      let closestDist = z.position.distanceTo(playerPos);
+      // Target selection: Determine closest between alive players and active Remnants!
+      let bestTarget = targets[0]?.position || new THREE.Vector3();
+      let bestTargetPlayer: CombatPlayerTarget | null = null;
+      let closestDist = 999999;
       let isRemnantTarget = false;
+
+      for (const p of targets) {
+        if (p.isDead) continue;
+        const d = z.position.distanceTo(p.position);
+        // If downed, deprioritize slightly so standing threats draw primary aggro
+        const effectiveDist = p.isDowned ? d * 2.2 : d;
+        if (effectiveDist < closestDist) {
+          closestDist = effectiveDist;
+          bestTarget = p.position;
+          bestTargetPlayer = p;
+          isRemnantTarget = false;
+        }
+      }
 
       for (const rem of remnantPositions) {
         const d = z.position.distanceTo(rem.pos);
@@ -356,6 +395,7 @@ export class EnemyManager {
         if (d < closestDist && d < 14) {
           closestDist = d;
           bestTarget = rem.pos;
+          bestTargetPlayer = null;
           isRemnantTarget = true;
         }
       }
@@ -415,10 +455,12 @@ export class EnemyManager {
         z.attackTimer = z.attackCooldown;
         soundManager.playZombieAttack();
 
-        // Deal damage to player if player is target
-        if (!isRemnantTarget) {
+        // Deal damage to targeted player
+        if (bestTargetPlayer) {
+          bestTargetPlayer.takeDamage(z.damage);
+          this.vfx.spawnBloodSplatter(bestTargetPlayer.position.clone().add(new THREE.Vector3(0, 1.2, 0)), toTarget.clone().negate(), 8);
+        } else if (!isRemnantTarget && onPlayerDamage) {
           onPlayerDamage(z.damage);
-          this.vfx.spawnBloodSplatter(playerPos.clone().add(new THREE.Vector3(0, 1.2, 0)), toTarget.clone().negate(), 8);
         } else {
           // Attacking remnant (causes visual spark/glitch)
           this.vfx.spawnRemnantGhostTrail(bestTarget, 0x00ffee);
